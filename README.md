@@ -29,16 +29,6 @@ pip install -r requirements.txt
 python main.py
 ```
 
-### 构建可执行文件
-
-```bash
-# 使用打包脚本
-打包.bat
-
-# 或手动构建
-venv\Scripts\activate
-pyinstaller main.spec
-```
 
 ## 📖 使用说明
 
@@ -68,7 +58,6 @@ pyinstaller main.spec
 ├── cache/              # 缓存目录
 │   └── images/         # 表情图片缓存
 ├── main.py             # 程序入口
-├── main.spec           # 构建配置
 ├── requirements.txt    # 依赖列表
 └── README.md           # 项目说明
 ```
@@ -78,7 +67,6 @@ pyinstaller main.spec
 - **Python 3.7+** - 核心编程语言
 - **PyQt5** - GUI界面框架
 - **requests** - HTTP网络请求
-- **PyInstaller** - 应用打包工具
 
 ## 📊 支持的API
 
