@@ -45,6 +45,11 @@ config.json
 app.log
 cache/
 *.exe
+CLAUDE.md
+main-old.py
+main.ico
+test.py
+打包.bat
 
 # Build outputs
 Bilibili直播表情包发送机.exe
