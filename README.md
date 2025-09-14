@@ -1,6 +1,6 @@
 # B站直播表情包发送器
 
-[![Python](https://img.shields.io/badge/Python-3.7%2B-blue)](https://www.python.org/)
+[![Python](https://img.shields.io/badge/Python-3.11%2B-blue)](https://www.python.org/)
 [![PyQt5](https://img.shields.io/badge/GUI-PyQt5-green)](https://pypi.org/project/PyQt5/)
 [![License](https://img.shields.io/badge/License-MIT-yellow)](LICENSE)
 
@@ -64,26 +64,31 @@ python main.py
 
 ## 🔧 技术栈
 
-- **Python 3.7+** - 核心编程语言
+- **Python 3.11+** - 核心编程语言
 - **PyQt5** - GUI界面框架
 - **requests** - HTTP网络请求
 
-## 📊 支持的API
+## 📚 API文档参考
 
-| 功能 | 接口地址 | 说明 |
-|------|----------|------|
-| 用户表情 | `api.bilibili.com/x/emote/user/panel/web` | 获取用户表情包 |
-| 表情详情 | `api.bilibili.com/x/emote/package` | 获取表情包详情 |
-| 直播间表情 | `api.live.bilibili.com/xlive/web-ucenter/v2/emoticon/GetEmoticons` | 获取直播间表情 |
-| 充电表情 | `api.bilibili.com/x/upowerv2/gw/rights/index` | 获取充电专属表情 |
-| 发送弹幕 | `api.live.bilibili.com/msg/send` | 发送表情弹幕 |
+本项目的API实现参考了 [bilibili-API-collect](https://github.com/SocialSisterYi/bilibili-API-collect) 项目，感谢该项目整理的完整B站API文档。
 
-## 🎯 使用场景
+## 开发背景与使用场景
 
-- 🎪 直播互动 - 快速发送多个表情活跃气氛
-- ⏰ 定时任务 - 设置定时发送配合直播内容
-- 🗂️ 表情管理 - 批量管理个人表情包使用
-- 🚀 效率提升 - 避免手动逐个发送的繁琐操作
+制作这个软件是因为B站网页端自带的表情包发送功能存在诸多不便：
+
+- 界面体验差：网页端表情界面太小，表情包看不清，发送界面特别敏感容易缩回
+- 网络问题：在网络波动情况下经常加载不出表情包
+- 功能限制：无法发送UP直播间充电表情（仅手机端支持）
+- 操作繁琐：需要连续发送或切换直播间时体验很差
+
+### 你会需要这个工具当：
+
+- 需要打call等，连续发送同一组表情包的时候
+- 在后台挂机黑听，还想随时发送表情包“黑听探头”的时候
+- 觉得网页版表情发送太麻烦，想要更快捷操作方式的时候
+- 需要在不同直播间之间快速切换发送表情也不会发错表情导致尴尬的时候
+- 想要发送那些只有手机端才能发的充电专属表情的时候
+- ~~想要伪造在场证明的时候，实际上跑去其他地方玩的时候~~（坏行为还请不要模仿欸嘿）
 
 ## 🚧 待实现的功能和优化
 
