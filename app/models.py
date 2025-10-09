@@ -36,7 +36,13 @@ class EmoticonManager(QObject):
         self._batch_timer = None  # 批量写入定时器
         self._batch_delay = 2.0  # 批量写入延迟时间（秒）
 
+        # 房间号-UID-名称缓存系统
+        self._room_cache_file = os.path.join(config.DATA_CACHE_DIR, "room_cache.json")
+        self._room_cache = {}  # 内存缓存 {room_id: {"uid": uid, "name": name}}
+        self._room_cache_lock = threading.Lock()  # 缓存锁
+
         self._setup_cache()
+        self._load_room_cache()
 
     def _setup_cache(self):
         """创建缓存目录（如果不存在）。"""
@@ -45,6 +51,85 @@ class EmoticonManager(QObject):
         # 创建映射文件目录
         os.makedirs(os.path.join(config.DATA_CACHE_DIR, "mappings"), exist_ok=True)
         logging.info("缓存目录已准备就绪。")
+
+    def _load_room_cache(self):
+        """
+        从文件加载房间号-UID-名称缓存。
+        """
+        try:
+            if os.path.exists(self._room_cache_file):
+                with open(self._room_cache_file, 'r', encoding='utf-8') as f:
+                    self._room_cache = json.load(f)
+                logging.info(f"房间缓存已加载，共 {len(self._room_cache)} 条记录")
+            else:
+                logging.info("房间缓存文件不存在，将创建新缓存")
+        except Exception as e:
+            logging.error(f"加载房间缓存失败: {e}")
+            self._room_cache = {}
+
+    def _save_room_cache(self):
+        """
+        保存房间号-UID-名称缓存到文件。
+        """
+        try:
+            with open(self._room_cache_file, 'w', encoding='utf-8') as f:
+                json.dump(self._room_cache, f, ensure_ascii=False, indent=2)
+            logging.debug(f"房间缓存已保存，共 {len(self._room_cache)} 条记录")
+        except Exception as e:
+            logging.error(f"保存房间缓存失败: {e}")
+
+    def _update_room_cache(self, room_id: int, uid: int, name: str):
+        """
+        更新房间号-UID-名称缓存。
+
+        Args:
+            room_id: 房间号
+            uid: 主播UID
+            name: 主播名称
+        """
+        with self._room_cache_lock:
+            room_id_str = str(room_id)
+            self._room_cache[room_id_str] = {
+                "uid": uid,
+                "name": name
+            }
+            self._save_room_cache()
+
+    def _get_cached_room_info(self, room_id: int) -> Tuple[Union[int, None], Union[str, None]]:
+        """
+        从缓存中获取房间信息。
+
+        Args:
+            room_id: 房间号
+
+        Returns:
+            (uid, name) 元组，如果缓存中没有则返回 (None, None)
+        """
+        room_id_str = str(room_id)
+        with self._room_cache_lock:
+            if room_id_str in self._room_cache:
+                cache_data = self._room_cache[room_id_str]
+                return cache_data.get("uid"), cache_data.get("name")
+        return None, None
+
+    def get_cached_rooms(self) -> List[Dict[str, str]]:
+        """
+        获取所有缓存的房间信息，用于下拉选择框。
+
+        Returns:
+            房间信息列表，每个元素包含 room_id 和 name
+        """
+        with self._room_cache_lock:
+            rooms = []
+            for room_id_str, cache_data in self._room_cache.items():
+                if cache_data.get("name"):  # 只返回有名称的房间
+                    rooms.append({
+                        "room_id": room_id_str,
+                        "name": cache_data["name"]
+                    })
+            # 按房间ID排序
+            rooms.sort(key=lambda x: int(x["room_id"]))
+            return rooms
 
     def _schedule_batch_write(self):
         """
@@ -270,6 +355,13 @@ class EmoticonManager(QObject):
 
     def get_UP_UID(self, room_id: int) -> int:
         """获取直播间主播的UID (带缓存)。"""
+        # 首先尝试从缓存获取
+        cached_uid, cached_name = self._get_cached_room_info(room_id)
+        if cached_uid is not None:
+            logging.debug(f"从缓存获取房间 {room_id} 的主播UID: {cached_uid}")
+            return cached_uid
+
+        # 缓存中没有，从API获取
         headers = {"User-Agent": self.user_agent}
         try:
             response = requests.get(config.GET_LIVE_INFORMATION, params={"room_id": room_id}, headers=headers, timeout=10)
@@ -278,6 +370,12 @@ class EmoticonManager(QObject):
             if data["code"] == 0:
                 uid = data["data"]["uid"]
                 logging.info(f"成功获取房间 {room_id} 的主播UID: {uid}")
+
+                # 获取主播名称并更新缓存
+                up_name = self._get_up_name_from_api(uid)
+                if up_name:
+                    self._update_room_cache(room_id, uid, up_name)
+
                 return uid
             else:
                 logging.error(f"获取主播UID失败: {data['message']}")
@@ -314,27 +412,64 @@ class EmoticonManager(QObject):
             logging.error(f"获取主播充电表情包异常: {e}")
             return None, {}
 
+    def _get_up_name_from_api(self, uid: int) -> str:
+        """
+        通过UID从API获取主播名称。
+
+        Args:
+            uid: 主播UID
+
+        Returns:
+            主播名称，如果获取失败则返回空字符串
+        """
+        headers = {"User-Agent": self.user_agent}
+        try:
+            response = requests.get(config.GET_UP_INFORMATION, params={"uid": uid}, headers=headers, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            if data["code"] == 0:
+                up_name = data["data"]["info"]["uname"]
+                logging.info(f"成功获取主播 {uid} 的名称: {up_name}")
+                return up_name
+            else:
+                logging.warning(f"获取主播名称失败: {data['message']}")
+                return ""
+        except Exception as e:
+            logging.error(f"获取主播名称异常: {e}")
+            return ""
+
     def _get_up_name_from_room(self, room_id: int) -> str:
         """
         获取直播间UP主名称。
         如果无法获取UP主名称，则返回直播间ID作为备用。
         """
-        headers = {"User-Agent": self.user_agent}
+        # 首先尝试从缓存获取
+        cached_uid, cached_name = self._get_cached_room_info(room_id)
+        if cached_name is not None:
+            logging.debug(f"从缓存获取房间 {room_id} 的主播名称: {cached_name}")
+            return cached_name
+
+        # 缓存中没有名称，但可能有UID
+        if cached_uid is not None:
+            # 有UID但没有名称，通过API获取名称
+            up_name = self._get_up_name_from_api(cached_uid)
+            if up_name:
+                self._update_room_cache(room_id, cached_uid, up_name)
+                return up_name
+
+        # 缓存中什么都没有，通过常规流程获取
         try:
             up_UID = self.get_UP_UID(room_id)
-            response = requests.get(config.GET_UP_INFORMATION, params={"uid": up_UID}, headers=headers, timeout=10)
-            response.raise_for_status()
-            data = response.json()
-            if data["code"] == 0:
-                up_name = data["data"]["info"]["uname"]
-                logging.info(f"成功获取房间 {room_id} 的主播名称: {up_name}")
-                return up_name
-            else:
-                logging.warning(f"获取主播名称失败，使用房间ID: {room_id}")
-                return str(room_id)
+            if up_UID:
+                up_name = self._get_up_name_from_api(up_UID)
+                if up_name:
+                    return up_name
         except Exception as e:
             logging.error(f"获取主播名称异常，使用房间ID: {room_id}, 错误: {e}")
-            return str(room_id)
+
+        # 所有方法都失败，返回房间ID
+        logging.warning(f"获取主播名称失败，使用房间ID: {room_id}")
+        return str(room_id)
 
     def _apply_special_package_renaming(self, package_name: str, package_type: str, room_id: int, up_name: str = None) -> str:
         """

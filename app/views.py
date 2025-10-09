@@ -1,11 +1,12 @@
 # app/views.py
 import sys
-from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
+from PyQt5.QtWidgets import (QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
                              QListWidget, QListWidgetItem, QGridLayout, QLineEdit, QPushButton,
                              QLabel, QSpinBox, QCheckBox, QScrollArea, QFrame, QMessageBox,
-                             QSizePolicy,QSlider)
+                             QSizePolicy,QSlider, QComboBox)
 from PyQt5.QtCore import Qt, QSize, pyqtSignal
 from PyQt5.QtGui import QIcon, QPixmap, QFont
+from typing import Dict, List
 
 # 从同级目录的 config.py 中导入默认值
 from . import config
@@ -201,8 +202,11 @@ class MainWindow(QMainWindow):
         # 第一行配置：房间号、Cookie、加载按钮
         row1_layout = QHBoxLayout()
         row1_layout.addWidget(QLabel("直播间ID:"))
-        self.room_id_edit = QLineEdit(str(config.DEFAULT_ROOM_ID))
-        row1_layout.addWidget(self.room_id_edit)
+        self.room_id_combo = QComboBox()
+        self.room_id_combo.setEditable(True)  # 允许用户手动输入
+        self.room_id_combo.setPlaceholderText("选择或输入直播间ID")
+        self.room_id_combo.setMinimumWidth(150)
+        row1_layout.addWidget(self.room_id_combo)
         
         row1_layout.addWidget(QLabel("Cookie:"))
         self.cookie_edit = QLineEdit(config.DEFAULT_COOKIE)
@@ -353,3 +357,38 @@ class MainWindow(QMainWindow):
         """处理图标大小滑块变化的事件。"""
         self.size_label.setText(f"{value}px")
         self.emoticon_widget.set_icon_size(value)
+
+    def update_room_combo(self, rooms: List[Dict[str, str]]):
+        """
+        更新直播间ID下拉选择框的内容。
+
+        Args:
+            rooms: 房间信息列表，每个元素包含 room_id 和 name
+        """
+        current_text = self.room_id_combo.currentText()
+        self.room_id_combo.clear()
+
+        # 添加默认提示项
+        self.room_id_combo.addItem("选择或输入直播间ID", "")
+
+        # 添加缓存的房间
+        for room in rooms:
+            display_text = f"{room['name']} ({room['room_id']})"
+            self.room_id_combo.addItem(display_text, room['room_id'])
+
+        # 恢复之前的文本（如果存在）
+        if current_text and current_text != "选择或输入直播间ID":
+            self.room_id_combo.setCurrentText(current_text)
+
+    def get_room_id(self) -> str:
+        """
+        获取当前选择的直播间ID。
+
+        Returns:
+            直播间ID字符串
+        """
+        current_data = self.room_id_combo.currentData()
+        if current_data:
+            return current_data
+        # 如果用户手动输入，返回输入的文本
+        return self.room_id_combo.currentText()

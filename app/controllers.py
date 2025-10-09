@@ -32,6 +32,7 @@ class MainController:
 
         self._connect_signals()
         self.load_config()
+        self._update_room_combo()  # 初始化时更新房间下拉框
 
     def _connect_signals(self):
         """将视图发出的信号连接到控制器的槽函数上。"""
@@ -72,21 +73,30 @@ class MainController:
         self.threadpool.append((thread, worker)) # 保持引用
         return thread
 
+    def _update_room_combo(self):
+        """更新房间下拉框的内容。"""
+        try:
+            cached_rooms = self.model.get_cached_rooms()
+            self.view.update_room_combo(cached_rooms)
+            logging.debug(f"房间下拉框已更新，共 {len(cached_rooms)} 个房间")
+        except Exception as e:
+            logging.error(f"更新房间下拉框失败: {e}")
+
     # --- 逻辑处理方法 ---
 
     def load_emoticons(self):
-        """处理“加载表情包”按钮的点击事件。"""
-        room_id_str = self.view.room_id_edit.text()
+        """处理"加载表情包"按钮的点击事件。"""
+        room_id_str = self.view.get_room_id()
         cookie = self.view.cookie_edit.text()
-        
+
         if not cookie or not room_id_str:
             self.view.show_message("错误", "请先填写直播间ID和Cookie。", "warning")
             return
-            
+
         self.model.set_cookie(cookie)
         self.view.set_status("正在加载表情包，请稍候...")
         self.view.load_emoticons_btn.setEnabled(False)
-        
+
         self._execute_in_thread(
             self.model.load_all_emoticons,
             on_success=self._on_emoticons_loaded,
@@ -97,10 +107,13 @@ class MainController:
     def _on_emoticons_loaded(self, emoticons: dict):
         """当表情包数据从模型成功返回后的回调函数。"""
         self.view.populate_package_list(emoticons)
-        
+
         self.view.set_status(f"成功加载了 {len(emoticons)} 个表情包。")
         self.view.load_emoticons_btn.setEnabled(True)
         logging.info("表情包数据已加载并传递给视图进行填充。")
+
+        # 更新房间下拉框，显示最新的缓存内容
+        self._update_room_combo()
 
     def display_package_emoticons(self, row: int):
         """处理左侧表情包列表的选择事件。"""
@@ -244,7 +257,10 @@ class MainController:
         try:
             with open("config.json", "r") as f:
                 config = json.load(f)
-                self.view.room_id_edit.setText(str(config.get("room_id", "")))
+                # 设置房间ID（下拉框会自动处理）
+                saved_room_id = str(config.get("room_id", ""))
+                if saved_room_id:
+                    self.view.room_id_combo.setCurrentText(saved_room_id)
                 self.view.cookie_edit.setText(config.get("cookie", ""))
                 self.view.interval_spin.setValue(config.get("interval", 5))
                 self.view.loop_check.setChecked(config.get("loop", False))
@@ -283,7 +299,7 @@ class MainController:
     def save_config(self):
         """保存当前配置到文件。"""
         config_data = {
-            "room_id": self.view.room_id_edit.text(),
+            "room_id": self.view.get_room_id(),
             "cookie": self.view.cookie_edit.text(),
             "interval": self.view.interval_spin.value(),
             "loop": self.view.loop_check.isChecked(),
