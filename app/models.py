@@ -4,31 +4,142 @@ import time
 import os
 import json
 import logging
+import threading
+from queue import Queue
+from collections import defaultdict
 from typing import List, Dict, Union, Tuple
+from PyQt5.QtCore import QObject, pyqtSignal
 
 # 从同级目录的 config.py 中导入配置
 from . import config
+from .download_manager import DownloadManager
 
-class EmoticonManager:
+class EmoticonManager(QObject):
     """
     模型层 (Model): 负责处理所有与Bilibili API交互、数据获取、处理和缓存的逻辑。
     这一层不涉及任何UI操作。
     """
+    # 信号：下载完成时发出
+    download_completed = pyqtSignal(str, str, str)  # url, emoticon_id, local_path
+    download_failed = pyqtSignal(str, str, str)     # url, emoticon_id, error_message
+
     def __init__(self):
+        super().__init__()
         self.emoticons = {}  # 内存中存储当前加载的表情包数据
         self.cookie = config.DEFAULT_COOKIE
         self.user_agent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
+        self.download_manager = None  # 下载管理器
+
+        # 批量映射更新系统
+        self._pending_mappings = defaultdict(dict)  # 待处理的映射更新 {mapping_file: {emoticon_id: package_name}}
+        self._mapping_lock = threading.Lock()  # 映射更新锁
+        self._batch_timer = None  # 批量写入定时器
+        self._batch_delay = 2.0  # 批量写入延迟时间（秒）
+
         self._setup_cache()
 
     def _setup_cache(self):
         """创建缓存目录（如果不存在）。"""
         os.makedirs(config.IMAGE_CACHE_DIR, exist_ok=True)
         os.makedirs(config.DATA_CACHE_DIR, exist_ok=True)
+        # 创建映射文件目录
+        os.makedirs(os.path.join(config.DATA_CACHE_DIR, "mappings"), exist_ok=True)
         logging.info("缓存目录已准备就绪。")
+
+    def _schedule_batch_write(self):
+        """
+        安排批量写入操作。
+        """
+        if self._batch_timer is not None:
+            self._batch_timer.cancel()
+
+        self._batch_timer = threading.Timer(self._batch_delay, self._flush_pending_mappings)
+        self._batch_timer.daemon = True
+        self._batch_timer.start()
+
+    def _flush_pending_mappings(self):
+        """
+        批量写入所有待处理的映射更新。
+        """
+        with self._mapping_lock:
+            if not self._pending_mappings:
+                return
+
+            pending_copy = self._pending_mappings.copy()
+            self._pending_mappings.clear()
+
+        # 批量写入所有映射文件
+        for mapping_file, updates in pending_copy.items():
+            self._batch_update_mapping_file(mapping_file, updates)
+
+    def _batch_update_mapping_file(self, mapping_file: str, updates: Dict[str, str]):
+        """
+        批量更新映射文件，合并所有更新操作。
+
+        Args:
+            mapping_file: 映射文件路径
+            updates: 要更新的映射 {emoticon_id: package_name}
+        """
+        try:
+            # 读取现有映射
+            existing_mappings = {}
+            if os.path.exists(mapping_file):
+                with open(mapping_file, 'r', encoding='utf-8') as f:
+                    existing_mappings = json.load(f)
+
+            # 合并更新（新值覆盖旧值）
+            existing_mappings.update(updates)
+
+            # 写入合并后的映射
+            with open(mapping_file, 'w', encoding='utf-8') as f:
+                json.dump(existing_mappings, f, ensure_ascii=False, indent=2)
+
+            logging.debug(f"批量更新映射文件 {mapping_file}: {len(updates)} 个更新")
+        except Exception as e:
+            logging.error(f"批量更新映射文件失败 {mapping_file}: {e}")
+            # 如果失败，将更新重新加入待处理队列
+            with self._mapping_lock:
+                self._pending_mappings[mapping_file].update(updates)
+
+    def _get_sanitized_package_name(self, package_name: str) -> str:
+        """
+        清理表情包名称，移除非法文件名字符。
+        """
+        # 移除Windows文件名中不允许的字符
+        invalid_chars = '<>:"/\\|?*'
+        for char in invalid_chars:
+            package_name = package_name.replace(char, '_')
+        # 限制长度避免路径过长
+        return package_name[:100]
+
+    def _get_package_cache_dir(self, package_name: str) -> str:
+        """
+        获取表情包的缓存目录路径。
+        """
+        sanitized_name = self._get_sanitized_package_name(package_name)
+        return os.path.join(config.IMAGE_CACHE_DIR, sanitized_name)
+
+    def _get_mapping_file_path(self, package_name: str) -> str:
+        """
+        获取表情包ID-名称映射文件的路径。
+        """
+        sanitized_name = self._get_sanitized_package_name(package_name)
+        return os.path.join(config.DATA_CACHE_DIR, "mappings", f"{sanitized_name}.json")
 
     def set_cookie(self, cookie: str):
         """设置请求时使用的Cookie。"""
         self.cookie = cookie
+
+    def init_download_manager(self, max_threads: int = 4):
+        """初始化下载管理器"""
+        if self.download_manager:
+            self.download_manager.shutdown()
+
+        self.download_manager = DownloadManager(self, max_threads)
+        # 连接下载管理器的信号到模型的信号
+        self.download_manager.download_completed.connect(self.download_completed)
+        self.download_manager.download_failed.connect(self.download_failed)
+        logging.info(f"下载管理器已初始化，最大工作线程数: {max_threads}")
 
     def get_csrf_from_cookie(self) -> str:
         """从Cookie字符串中提取bili_jct (csrf_token)。"""
@@ -39,35 +150,70 @@ class EmoticonManager:
             logging.error(f"从Cookie中解析CSRF失败: {e}")
             return ''
 
-    def get_emoticon_image(self, url: str, emoticon_id) -> str:
+    def get_emoticon_image(self, url: str, emoticon_id, package_name: str = None) -> str:
         """
-        获取表情图片。如果本地有缓存，则返回本地路径，否则下载并缓存后返回路径。
+        获取表情图片。如果本地有缓存，则返回本地路径，否则使用下载管理器下载。
         返回本地文件的绝对路径。
         """
         # 从URL中获取文件扩展名，如果没有则默认为.png
         file_extension = os.path.splitext(url)[1]
         if not file_extension:
             file_extension = ".png"
-        
+
         # 统一ID格式为字符串，避免路径问题
         emoticon_id_str = str(emoticon_id).replace(":", "_").replace("/", "_")
-        local_path = os.path.join(config.IMAGE_CACHE_DIR, f"{emoticon_id_str}{file_extension}")
 
-        if os.path.exists(local_path):
+        # 如果没有提供包名
+        if not package_name:
+            raise ValueError(f"表情包缺失包名,ID:{emoticon_id}")
+
+        # 使用新的缓存系统
+        return self._get_emoticon_image_with_package(url, emoticon_id_str, file_extension, package_name)
+
+    def _get_emoticon_image_with_package(self, url: str, emoticon_id_str: str, file_extension: str, package_name: str) -> str:
+        """
+        使用表情包分类的缓存系统获取表情图片。
+        """
+        # 获取表情包缓存目录
+        package_cache_dir = self._get_package_cache_dir(package_name)
+        os.makedirs(package_cache_dir, exist_ok=True)
+
+        # 新的缓存文件路径：ID+包名
+        sanitized_package_name = self._get_sanitized_package_name(package_name)
+        local_path = os.path.join(package_cache_dir, f"{emoticon_id_str}_{sanitized_package_name}{file_extension}")
+
+        # 检查映射文件，判断是否需要刷新缓存
+        mapping_file = self._get_mapping_file_path(package_name)
+        should_refresh = self._should_refresh_cache(mapping_file, emoticon_id_str, package_name)
+
+        if os.path.exists(local_path) and not should_refresh:
             logging.debug(f"图片在缓存中找到: {local_path}")
             return local_path
 
-        logging.info(f"正在下载图片: {url}")
-        try:
-            response = requests.get(url, timeout=10, headers={"User-Agent": self.user_agent})
-            response.raise_for_status()
-            with open(local_path, 'wb') as f:
-                f.write(response.content)
-            logging.info(f"图片已下载并缓存至: {local_path}")
-            return local_path
-        except requests.RequestException as e:
-            logging.error(f"下载图片失败 {url}: {e}")
-            return "" # 下载失败返回空字符串
+        # 如果没有下载管理器，使用同步下载
+        if not self.download_manager:
+            logging.info(f"正在下载图片: {url}")
+            try:
+                response = requests.get(url, timeout=10, headers={"User-Agent": self.user_agent})
+                response.raise_for_status()
+                with open(local_path, 'wb') as f:
+                    f.write(response.content)
+
+                # 更新映射文件
+                self._update_mapping_file(mapping_file, emoticon_id_str, package_name)
+
+                logging.info(f"图片已下载并缓存至: {local_path}")
+                return local_path
+            except requests.RequestException as e:
+                logging.error(f"下载图片失败 {url}: {e}")
+                return "" # 下载失败返回空字符串
+        else:
+            # 使用下载管理器异步下载
+            if self.download_manager.add_download_task(local_path ,url, emoticon_id_str, package_name, priority=0):
+                # 更新映射文件
+                self._update_mapping_file(mapping_file, emoticon_id_str, package_name)
+                logging.debug(f"已添加下载任务: {url}")
+            return ""  # 异步下载，暂时返回空路径
 
     # --- 以下是所有与Bilibili API交互的方法 ---
 
@@ -168,12 +314,68 @@ class EmoticonManager:
             logging.error(f"获取主播充电表情包异常: {e}")
             return None, {}
 
+    def _get_up_name_from_room(self, room_id: int) -> str:
+        """
+        获取直播间UP主名称。
+        如果无法获取UP主名称，则返回直播间ID作为备用。
+        """
+        headers = {"User-Agent": self.user_agent}
+        try:
+            up_UID = self.get_UP_UID(room_id)
+            response = requests.get(config.GET_UP_INFORMATION, params={"uid": up_UID}, headers=headers, timeout=10)
+            response.raise_for_status()
+            data = response.json()
+            if data["code"] == 0:
+                up_name = data["data"]["info"]["uname"]
+                logging.info(f"成功获取房间 {room_id} 的主播名称: {up_name}")
+                return up_name
+            else:
+                logging.warning(f"获取主播名称失败，使用房间ID: {room_id}")
+                return str(room_id)
+        except Exception as e:
+            logging.error(f"获取主播名称异常，使用房间ID: {room_id}, 错误: {e}")
+            return str(room_id)
+
+    def _apply_special_package_renaming(self, package_name: str, package_type: str, room_id: int, up_name: str = None) -> str:
+        """
+        应用特殊表情包重命名规则。
+
+        Args:
+            package_name: 原始表情包名称
+            package_type: 表情包类型
+            room_id: 直播间ID
+            up_name: UP主名称（可选）
+        """
+        if not up_name:
+            up_name = self._get_up_name_from_room(room_id)
+
+        # 特殊表情包重命名规则
+        special_names = {
+            "UP主大表情": f"{up_name}大表情",
+            "房间专属表情": f"{up_name}房间专属表情",
+            "为TA充电": f"{up_name}充电表情"
+        }
+
+        # 检查是否为特殊表情包
+        for original_name, new_name in special_names.items():
+            if original_name in package_name:
+                return new_name
+
+        # 对于充电表情包的特殊处理
+        if package_type == "upower" and "为TA充电" in package_name:
+            return f"{up_name}充电表情"
+
+        return package_name
+
     def load_all_emoticons(self, room_id: int) -> Dict:
         """
         核心方法：加载并整合所有类型的表情包（用户、直播间、充电）。
         这个方法会被 Controller 在后台线程中调用。
         """
         self.emoticons.clear()
+
+        # 获取UP主名称用于特殊表情包重命名
+        up_name = self._get_up_name_from_room(room_id)
 
         # 1. 获取用户表情包
         user_packages = self.get_user_emoticons()
@@ -186,8 +388,12 @@ class EmoticonManager:
                     pkg_id = pkg["id"]
                     detail_pkg = details_map.get(pkg_id)
                     if detail_pkg and detail_pkg.get("emote"):
+                        # 应用重命名规则
+                        original_name = pkg["text"]
+                        renamed_name = self._apply_special_package_renaming(original_name, "user", room_id, up_name)
+
                         self.emoticons[pkg_id] = {
-                            "name": pkg["text"],
+                            "name": renamed_name,
                             "type": "user",
                             "emotes": [{"name": e["text"], "url": e["url"], "id": e["id"]} for e in detail_pkg["emote"]]
                         }
@@ -197,8 +403,12 @@ class EmoticonManager:
         for pkg in live_packages:
             pkg_id = pkg["pkg_id"] # 不需要避免冲突,这个表情包列表只是为了补全房间表情的
             if pkg_id not in self.emoticons:
+                # 应用重命名规则
+                original_name = pkg["pkg_name"]
+                renamed_name = self._apply_special_package_renaming(original_name, "live", room_id, up_name)
+
                 self.emoticons[pkg_id] = {
-                    "name": pkg["pkg_name"],
+                    "name": renamed_name,
                     "type": "live",
                     "emotes": [{"name": e["emoji"], "url": e["url"], "id": e.get("emoticon_unique", "")} for e in pkg["emoticons"]]
                 }
@@ -208,16 +418,20 @@ class EmoticonManager:
         if up_uid:
             charge_type_map, charge_packages = self.get_charge_emoticons(up_uid)
             if charge_type_map and charge_packages:
-                up_name = list(charge_type_map.keys())[0]
+                charge_up_name = list(charge_type_map.keys())[0]
                 charge_level_names = list(charge_type_map.values())[0]
 
                 for pkg_num_str, pkg_data in charge_packages.items():
                     # 为充电包创建唯一的ID
                     pkg_id = f"upower_{up_uid}_{pkg_num_str}"
                     level_name = charge_level_names.get(pkg_num_str, f"Level {pkg_num_str}")
-                    
+
+                    # 应用重命名规则
+                    original_name = f"{charge_up_name}-[{level_name}]"
+                    renamed_name = self._apply_special_package_renaming(original_name, "upower", room_id, up_name)
+
                     self.emoticons[pkg_id] = {
-                        "name": f"{up_name}-[{level_name}]",
+                        "name": renamed_name,
                         "type": "upower",
                         "emotes": []
                     }
@@ -286,3 +500,52 @@ class EmoticonManager:
         except Exception as e:
             logging.error(f"发送表情时发生异常: {e}")
             return False, str(e)
+
+    def _should_refresh_cache(self, mapping_file: str, emoticon_id: str, current_package_name: str) -> bool:
+        """
+        检查是否需要刷新缓存。
+        如果表情包名称发生变化，则需要刷新缓存。
+        """
+        if not os.path.exists(mapping_file):
+            return False
+
+        try:
+            with open(mapping_file, 'r', encoding='utf-8') as f:
+                mappings = json.load(f)
+
+            # 检查该表情ID对应的包名是否与当前包名一致
+            if emoticon_id in mappings:
+                cached_package_name = mappings[emoticon_id]
+                if cached_package_name != current_package_name:
+                    logging.info(f"检测到表情包名称变化: {cached_package_name} -> {current_package_name}，需要刷新缓存")
+                    return True
+
+            return False
+        except Exception as e:
+            logging.error(f"读取映射文件失败 {mapping_file}: {e}")
+            return False
+
+    def _update_mapping_file(self, mapping_file: str, emoticon_id: str, package_name: str):
+        """
+        更新表情包ID-名称映射文件（使用批量更新系统）。
+        """
+        with self._mapping_lock:
+            # 将更新添加到待处理队列
+            if mapping_file not in self._pending_mappings:
+                self._pending_mappings[mapping_file] = {}
+            self._pending_mappings[mapping_file][emoticon_id] = package_name
+
+        # 安排批量写入
+        self._schedule_batch_write()
+
+    def flush_all_mappings(self):
+        """
+        强制写入所有待处理的映射更新。
+        在应用程序退出前调用此方法。
+        """
+        if self._batch_timer is not None:
+            self._batch_timer.cancel()
+            self._batch_timer = None
+
+        self._flush_pending_mappings()
+        logging.info("所有映射更新已写入完成")

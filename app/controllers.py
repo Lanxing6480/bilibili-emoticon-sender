@@ -22,9 +22,13 @@ class MainController:
         self.threadpool = []  # 用于保持对活动线程的引用，防止被垃圾回收
         self.send_queue = []
         self.is_sending = False
-        
+
         self.sending_timer = QTimer()
         self.sending_timer.timeout.connect(self._send_next_from_queue)
+
+        # 连接模型的下载信号
+        self.model.download_completed.connect(self._on_download_completed)
+        self.model.download_failed.connect(self._on_download_failed)
 
         self._connect_signals()
         self.load_config()
@@ -101,15 +105,17 @@ class MainController:
     def display_package_emoticons(self, row: int):
         """处理左侧表情包列表的选择事件。"""
         if row < 0: return
-        
+
         item = self.view.package_list.item(row)
         pkg_id = item.data(Qt.UserRole) # 从视图项获取数据
         pkg_data = self.model.emoticons.get(pkg_id)
-        
+
         if pkg_data:
-            emotes_with_type = [dict(e, type=pkg_data["type"]) for e in pkg_data["emotes"]]
+            # 为每个表情添加表情包名称信息
+            emotes_with_package = [dict(e, package_name=pkg_data["name"]) for e in pkg_data["emotes"]]
+            emotes_with_type = [dict(e, type=pkg_data["type"]) for e in emotes_with_package]
             self.view.emoticon_widget.set_emoticons(emotes_with_type)
-            
+
             # 为新创建的表情按钮连接信号
             for button in self.view.emoticon_widget.emoticon_buttons:
                 button.clicked_with_data.connect(self.add_to_send_queue)
@@ -119,12 +125,17 @@ class MainController:
                 
     def _load_emoticon_image(self, button, url: str, emoticon_id: str):
         """在后台加载单个表情图片并更新对应的按钮。"""
+        # 从按钮的表情数据中获取表情包名称
+        package_name = button.emoticon_data.get('package_name')
+
+        # 使用模型的方法加载图片
         self._execute_in_thread(
             self.model.get_emoticon_image,
             on_success=button.set_icon_from_path,
             on_error=lambda err: logging.error(f"加载图片失败 {url}: {err[1]}"),
             url=url,
-            emoticon_id=emoticon_id
+            emoticon_id=emoticon_id,
+            package_name=package_name
         )
 
     # --- 发送逻辑 ---
@@ -239,11 +250,35 @@ class MainController:
                 self.view.loop_check.setChecked(config.get("loop", False))
                 self.view.quick_send_check.setChecked(config.get("quick_send", False))
                 self.view.size_slider.setValue(config.get("icon_size",84))
+
+                # 初始化下载管理器
+                max_threads = config.get("max_download_threads", 4)
+                self.model.init_download_manager(max_threads)
+
                 logging.info("配置文件 config.json 加载成功。")
         except FileNotFoundError:
             logging.warning("未找到配置文件 config.json，将使用默认值。")
+            # 使用默认值初始化下载管理器
+            self.model.init_download_manager(4)
         except Exception as e:
             logging.error(f"加载配置文件失败: {e}")
+            # 出错时使用默认值初始化下载管理器
+            self.model.init_download_manager(4)
+
+    def _on_download_completed(self, url: str, emoticon_id: str, local_path: str):
+        """下载完成回调"""
+        logging.debug(f"下载完成: {url} -> {local_path}")
+
+        # 查找并更新对应的按钮图标
+        for button in self.view.emoticon_widget.emoticon_buttons:
+            if str(button.emoticon_data.get('id')) == emoticon_id:
+                # button.request_image_load.emit(button, button.emoticon_data['url'], str(button.emoticon_data['id']))
+                button.set_icon_from_path(local_path)
+                break
+
+    def _on_download_failed(self, url: str, emoticon_id: str, error_message: str):
+        """下载失败回调"""
+        logging.error(f"下载失败: {url}, 错误: {error_message}")
 
     def save_config(self):
         """保存当前配置到文件。"""
@@ -253,7 +288,8 @@ class MainController:
             "interval": self.view.interval_spin.value(),
             "loop": self.view.loop_check.isChecked(),
             "quick_send": self.view.quick_send_check.isChecked(),
-            "icon_size": self.view.size_slider.value()
+            "icon_size": self.view.size_slider.value(),
+            "max_download_threads": self.model.download_manager.max_workers if self.model.download_manager else 4
         }
         try:
             with open("config.json", "w") as f:

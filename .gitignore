@@ -44,6 +44,7 @@ Thumbs.db
 config.json
 app.log
 cache/
+cache11/
 *.exe
 CLAUDE.md
 main-old.py
