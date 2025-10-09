@@ -48,18 +48,19 @@ python main.py
 ## 🏗️ 项目结构
 
 ```
-├── app/                 # 核心代码
-│   ├── models.py       # 数据模型和API处理
-│   ├── views.py        # UI界面组件
-│   ├── controllers.py  # 业务逻辑控制
-│   ├── threads.py      # 多线程工作器
-│   ├── config.py       # 配置常量
-│   └── logger_setup.py # 日志配置
-├── cache/              # 缓存目录
-│   └── images/         # 表情图片缓存
-├── main.py             # 程序入口
-├── requirements.txt    # 依赖列表
-└── README.md           # 项目说明
+├── app/                      # 核心代码
+│   ├── models.py             # 数据模型和API处理
+│   ├── views.py              # UI界面组件
+│   ├── controllers.py        # 业务逻辑控制
+│   ├── download_manager.py   # 下载任务控制
+│   ├── threads.py            # 多线程工作器
+│   ├── config.py             # 配置常量
+│   └── logger_setup.py       # 日志配置
+├── cache/                    # 缓存目录
+│   └── images/               # 表情图片缓存
+├── main.py                   # 程序入口
+├── requirements.txt          # 依赖列表
+└── README.md                 # 项目说明
 ```
 
 ## 🔧 技术栈
@@ -93,7 +94,7 @@ python main.py
 ## 🚧 待实现的功能和优化
 
 1. **重复弹幕表情包时自动+1** - 监听直播间，识别重复弹幕表情包时自动"+1"
-2. **直播间历史记录** - 保存常用直播间，支持快速切换
+2. ~~**直播间历史记录** - 保存常用直播间，支持快速切换~~（以实现）
 3. **UI日志面板** - 在界面中集成实时日志显示功能
 4. **表情收藏功能** - 收藏常用表情快速访问
 5. **发送组合预设** - 创建和保存表情发送组合
