@@ -41,6 +41,7 @@ ENV/
 Thumbs.db
 
 # Project specific
+.gitignore
 config.json
 app.log
 cache/
@@ -50,6 +51,7 @@ CLAUDE.md
 main-old.py
 main.ico
 test.py
+debug_main.py
 打包.bat
 
 # Build outputs

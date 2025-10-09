@@ -42,6 +42,7 @@ class MainController:
         self.view.start_btn.clicked.connect(self.toggle_sending)
         self.view.clear_queue_btn.clicked.connect(self.clear_send_queue)
         self.view.quick_send_check.stateChanged.connect(self._on_quick_send_toggled)
+        self.view.room_id_combo.currentIndexChanged.connect(self._on_room_id_changed)
 
     def _on_quick_send_toggled(self, state):
         """当快速发送开关切换时，切换开始按钮的可用性。"""
@@ -82,6 +83,19 @@ class MainController:
         except Exception as e:
             logging.error(f"更新房间下拉框失败: {e}")
 
+    def _on_room_id_changed(self, index: int):
+        """
+        当直播间ID下拉框选择变化时，将文本框内容设置为纯数字直播间ID。
+
+        Args:
+            index: 选中的索引
+        """
+        if index >= 0:  # 现在所有项都是有效的房间选项
+            room_id = self.view.room_id_combo.currentData()
+            if room_id:
+                # 将文本框内容设置为纯数字直播间ID
+                self.view.room_id_combo.setEditText(str(room_id))
+
     # --- 逻辑处理方法 ---
 
     def load_emoticons(self):
@@ -91,6 +105,10 @@ class MainController:
 
         if not cookie or not room_id_str:
             self.view.show_message("错误", "请先填写直播间ID和Cookie。", "warning")
+            return
+        
+        if not room_id_str.isdigit():
+            self.view.show_message("错误", "直播间ID只能是纯数字", "warning")
             return
 
         self.model.set_cookie(cookie)
@@ -169,13 +187,17 @@ class MainController:
         """
         处理立即发送一个表情的逻辑。
         """
-        room_id_str = self.view.room_id_edit.text()
+        room_id_str = self.view.get_room_id()
         cookie = self.view.cookie_edit.text()
 
         if not cookie or not room_id_str:
             self.view.show_message("错误", "请先填写直播间ID和Cookie。", "warning")
             return
-        
+
+        if not room_id_str.isdigit():
+            self.view.show_message("错误", "直播间ID只能是纯数字", "warning")
+            return
+
         self.view.set_status(f"正在快速发送: {emoticon_data['name']}...")
         room_id = int(room_id_str)
         
@@ -233,7 +255,14 @@ class MainController:
             self.view.send_queue_list.takeItem(0)
         
         self.view.set_status(f"正在发送: {emoticon_data['name']}...")
-        room_id = int(self.view.room_id_edit.text())
+        room_id_str = self.view.get_room_id()
+
+        if not room_id_str or not room_id_str.isdigit():
+            self.view.show_message("错误", "直播间ID无效，请重新选择或输入", "warning")
+            self.toggle_sending()  # 停止发送
+            return
+
+        room_id = int(room_id_str)
         
         self._execute_in_thread(
             self.model.send_emoticon,

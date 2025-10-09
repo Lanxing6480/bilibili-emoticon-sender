@@ -368,16 +368,13 @@ class MainWindow(QMainWindow):
         current_text = self.room_id_combo.currentText()
         self.room_id_combo.clear()
 
-        # 添加默认提示项
-        self.room_id_combo.addItem("选择或输入直播间ID", "")
-
         # 添加缓存的房间
         for room in rooms:
             display_text = f"{room['name']} ({room['room_id']})"
             self.room_id_combo.addItem(display_text, room['room_id'])
 
         # 恢复之前的文本（如果存在）
-        if current_text and current_text != "选择或输入直播间ID":
+        if current_text:
             self.room_id_combo.setCurrentText(current_text)
 
     def get_room_id(self) -> str:
